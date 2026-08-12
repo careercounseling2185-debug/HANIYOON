@@ -1,0 +1,6 @@
+{
+  "name": "이공계 직무 포트폴리오 초안 마스터",
+  "description": "2026 이공계 채용 시장 맞춤형 프리미엄 6장 직무 핏 포트폴리오 초안 생성기",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
