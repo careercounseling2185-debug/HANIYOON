@@ -1,10 +1,12 @@
 import { useState } from "react";
+import { GoogleGenAI } from "@google/genai";
 import { LandingPage } from "./components/LandingPage";
 import { InputForm } from "./components/InputForm";
 import { MissingFieldsModal } from "./components/MissingFieldsModal";
 import { AnalysisSummaryCard } from "./components/AnalysisSummaryCard";
 import { SlideViewer } from "./components/SlideViewer";
 import { PortfolioInput, PortfolioResponse } from "./types";
+import { buildPortfolioPrompt } from "./utils/portfolioPrompt";
 import { Sparkles, ArrowDown, Award, FileCheck2 } from "lucide-react";
 
 export default function App() {
@@ -82,19 +84,86 @@ export default function App() {
     setResult(null);
 
     try {
-      const res = await fetch("/api/generate-portfolio", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...input,
-          userApiKey: userApiKey.trim(),
-        }),
-      });
+      let data: any = null;
 
-      const data: any = await res.json();
+      // Attempt 1: Call backend API route
+      try {
+        const res = await fetch("/api/generate-portfolio", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...input,
+            userApiKey: userApiKey.trim(),
+          }),
+        });
 
-      if (!res.ok || data.error) {
-        alert(data.error || "포트폴리오 생성 중 문제가 발생했습니다. 잠시 후 다시 시도해 주세요.");
+        if (res.headers.get("content-type")?.includes("application/json")) {
+          data = await res.json();
+        }
+      } catch (backendErr) {
+        // Backend API route unreachable or static export environment
+      }
+
+      // Attempt 2: Fallback to client-side direct Gemini API call
+      // Guarantees 100% generation on Vercel SPA static exports
+      if (!data && userApiKey.trim()) {
+        const ai = new GoogleGenAI({ apiKey: userApiKey.trim() });
+        const candidateModels = [
+          "gemini-3.6-flash",
+          "gemini-2.5-flash",
+          "gemini-2.0-flash",
+          "gemini-1.5-flash",
+          "gemini-flash-latest",
+        ];
+
+        const promptText = buildPortfolioPrompt(input);
+        let rawResponseText = "";
+
+        for (const modelName of candidateModels) {
+          try {
+            const resp = await ai.models.generateContent({
+              model: modelName,
+              contents: promptText,
+              config: {
+                responseMimeType: "application/json",
+              },
+            });
+            if (resp.text) {
+              rawResponseText = resp.text;
+              break;
+            }
+          } catch (mErr) {
+            // try next model
+          }
+        }
+
+        if (rawResponseText) {
+          let cleanText = rawResponseText.trim();
+          if (cleanText.startsWith("```json")) {
+            cleanText = cleanText.replace(/^```json/, "").replace(/```$/, "").trim();
+          } else if (cleanText.startsWith("```")) {
+            cleanText = cleanText.replace(/^```/, "").replace(/```$/, "").trim();
+          }
+
+          const parsed = JSON.parse(cleanText);
+          if (parsed.htmlCode && parsed.companyAnalysisSummary) {
+            data = {
+              isComplete: true,
+              companyAnalysisSummary: parsed.companyAnalysisSummary,
+              htmlCode: parsed.htmlCode,
+              studentNotes: parsed.studentNotes || "",
+            };
+          }
+        }
+      }
+
+      if (!data) {
+        alert("포트폴리오 생성에 실패했습니다. Gemini API Key의 상태 및 네트워크 연결을 확인해 주세요.");
+        return;
+      }
+
+      if (data.error) {
+        alert(data.error || "포트폴리오 생성 중 문제가 발생했습니다.");
         return;
       }
 

@@ -47,7 +47,33 @@ app.post("/api/verify-key", async (req, res) => {
 
     const cleanKey = userApiKey.trim();
 
-    // Verify key with Google Gemini API
+    // 1. Direct validation via Google Generative Language REST API (Fast, standard, no quota consumed)
+    try {
+      const googleRes = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(cleanKey)}`
+      );
+
+      if (googleRes.ok) {
+        return res.status(200).json({
+          success: true,
+          message: "Gemini API Key 유효성 검증 성공! 서비스 이용이 정상 승인되었습니다.",
+        });
+      }
+
+      const errorData: any = await googleRes.json().catch(() => ({}));
+      const apiErrorMsg = errorData?.error?.message || "";
+
+      if (apiErrorMsg.toLowerCase().includes("key not valid") || googleRes.status === 400 || googleRes.status === 403) {
+        return res.status(400).json({
+          success: false,
+          error: "유효하지 않은 API Key입니다. Google AI Studio에서 정확한 Key를 복사하여 입력해 주세요.",
+        });
+      }
+    } catch (restErr) {
+      // Fallback to SDK test if REST API fetch failed
+    }
+
+    // 2. Fallback verification with SDK using candidate models
     const ai = new GoogleGenAI({
       apiKey: cleanKey,
       httpOptions: {
@@ -57,15 +83,34 @@ app.post("/api/verify-key", async (req, res) => {
       },
     });
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.6-flash",
-      contents: "API Key Validation Ping",
-      config: {
-        maxOutputTokens: 2,
-      },
-    });
+    const candidateModels = [
+      "gemini-3.6-flash",
+      "gemini-2.5-flash",
+      "gemini-2.0-flash",
+      "gemini-1.5-flash",
+      "gemini-flash-latest",
+    ];
 
-    if (response) {
+    let verified = false;
+    for (const modelName of candidateModels) {
+      try {
+        const response = await ai.models.generateContent({
+          model: modelName,
+          contents: "Ping",
+          config: {
+            maxOutputTokens: 1,
+          },
+        });
+        if (response) {
+          verified = true;
+          break;
+        }
+      } catch (mErr) {
+        // Try next candidate
+      }
+    }
+
+    if (verified) {
       return res.status(200).json({
         success: true,
         message: "Gemini API Key 유효성 검증 성공! 서비스 이용이 정상 승인되었습니다.",
@@ -73,7 +118,7 @@ app.post("/api/verify-key", async (req, res) => {
     } else {
       return res.status(400).json({
         success: false,
-        error: "API Key 유효성 확인 중 응답을 수신하지 못했습니다.",
+        error: "유효하지 않은 API Key이거나 해당 키의 Google AI 서비스 할당량이 초과되었습니다.",
       });
     }
   } catch (err: any) {
@@ -82,36 +127,9 @@ app.post("/api/verify-key", async (req, res) => {
     const maskedMsg = errMsg.replace(/AIzaSy[A-Za-z0-9_-]{33}/g, "AIzaSy...[MASKED]");
     console.warn("API Key Verification Error:", maskedMsg);
 
-    let userFriendlyError = "입력하신 Gemini API Key 승인에 실패했습니다.";
-    const upperMsg = errMsg.toUpperCase();
-
-    if (
-      upperMsg.includes("API_KEY_INVALID") ||
-      upperMsg.includes("INVALID_ARGUMENT") ||
-      upperMsg.includes("UNAUTHENTICATED") ||
-      upperMsg.includes("PERMISSION_DENIED") ||
-      upperMsg.includes("400") ||
-      upperMsg.includes("403")
-    ) {
-      userFriendlyError = "유효하지 않은 API Key입니다. Google AI Studio에서 정확한 Key를 복사하여 입력해 주세요.";
-    } else if (
-      upperMsg.includes("RESOURCE_EXHAUSTED") ||
-      upperMsg.includes("QUOTA") ||
-      upperMsg.includes("429")
-    ) {
-      userFriendlyError = "해당 API Key의 사용량 할당량(Quota)이 초과되었습니다. 잠시 후 다시 시도하거나 다른 키를 사용해 주세요.";
-    } else if (
-      upperMsg.includes("ENOTFOUND") ||
-      upperMsg.includes("FETCH_ERROR") ||
-      upperMsg.includes("TIMEDOUT") ||
-      upperMsg.includes("NETWORK")
-    ) {
-      userFriendlyError = "Google API 서버와 통신 네트워크 오류가 발생했습니다. 네트워크 상태를 확인 후 재시도해 주세요.";
-    }
-
     return res.status(400).json({
       success: false,
-      error: userFriendlyError,
+      error: "API Key 승인에 실패했습니다. Google AI Studio에서 발급받은 'AIzaSy...' Key인지 확인해 주세요.",
     });
   }
 });

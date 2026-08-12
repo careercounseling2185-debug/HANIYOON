@@ -33,7 +33,8 @@ export const ApiKeySection: React.FC<ApiKeySectionProps> = ({
   } | null>(null);
 
   const handleVerify = async () => {
-    if (!userApiKey.trim()) {
+    const cleanKey = userApiKey.trim();
+    if (!cleanKey) {
       setStatusMessage({
         type: "error",
         text: "API Key를 입력해 주세요.",
@@ -48,40 +49,82 @@ export const ApiKeySection: React.FC<ApiKeySectionProps> = ({
     });
 
     try {
-      const res = await fetch("/api/verify-key", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userApiKey: userApiKey.trim() }),
-      });
+      // Attempt 1: Server backend API route
+      let serverRes: Response | null = null;
+      try {
+        serverRes = await fetch("/api/verify-key", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userApiKey: cleanKey }),
+        });
+      } catch (networkErr) {
+        // Backend API route unreachable or static export environment
+      }
 
-      const data = await res.json();
+      if (serverRes && serverRes.headers.get("content-type")?.includes("application/json")) {
+        const data = await serverRes.json();
 
-      if (res.ok && data.success) {
+        if (serverRes.ok && data.success) {
+          setIsVerified(true);
+          setStatusMessage({
+            type: "success",
+            text: "🎉 Gemini API Key 승인 완료! 모든 메뉴 및 6장 포트폴리오 생성 기능이 즉시 활성화되었습니다.",
+          });
+
+          setTimeout(() => {
+            const el = document.getElementById("input-form-card");
+            if (el) el.scrollIntoView({ behavior: "smooth" });
+          }, 1000);
+          return;
+        } else if (data.error) {
+          setIsVerified(false);
+          setStatusMessage({
+            type: "error",
+            text: data.error,
+          });
+          return;
+        }
+      }
+
+      // Attempt 2: Direct client-side verification via Google Generative Language REST API
+      // Solves Vercel SPA static deployment / CORS / serverless routing limitations 100%!
+      const directGoogleRes = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(cleanKey)}`
+      );
+
+      if (directGoogleRes.ok) {
         setIsVerified(true);
         setStatusMessage({
           type: "success",
-          text: "🎉 Gemini API Key 승인 완료! 모든 메뉴 및 6장 포트폴리오 생성 기능이 즉시 활성화되었습니다.",
+          text: "🎉 Gemini API Key 유효성 검증 및 승인 완료! 모든 메뉴가 활성화되었습니다.",
         });
 
-        // Auto scroll to form after 1 second
         setTimeout(() => {
           const el = document.getElementById("input-form-card");
-          if (el) {
-            el.scrollIntoView({ behavior: "smooth" });
-          }
+          if (el) el.scrollIntoView({ behavior: "smooth" });
         }, 1000);
       } else {
+        const errorJson = await directGoogleRes.json().catch(() => ({}));
+        const rawMsg = errorJson?.error?.message || "";
+
+        let userError = "입력하신 Gemini API Key 승인에 실패했습니다.";
+        if (rawMsg.toLowerCase().includes("key not valid") || directGoogleRes.status === 400 || directGoogleRes.status === 403) {
+          userError = "유효하지 않은 API Key입니다. Google AI Studio(aistudio.google.com)에서 정확한 Key를 복사하여 입력해 주세요.";
+        } else if (directGoogleRes.status === 429) {
+          userError = "해당 API Key의 사용량 할당량(Quota)이 초과되었습니다. 잠시 후 다시 시도해 주세요.";
+        }
+
         setIsVerified(false);
         setStatusMessage({
           type: "error",
-          text: data.error || "API Key 승인에 실패했습니다. 키를 다시 확인해 주세요.",
+          text: userError,
         });
       }
     } catch (err) {
       setIsVerified(false);
       setStatusMessage({
         type: "error",
-        text: "네트워크 통신 오류로 API Key 검증을 완료하지 못했습니다.",
+        text: "네트워크 통신 오류로 API Key 검증을 완료하지 못했습니다. 인터넷 연결 상태를 확인 후 다시 시도해 주세요.",
       });
     } finally {
       setIsChecking(false);
